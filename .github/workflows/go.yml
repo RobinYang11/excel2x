@@ -34,6 +34,21 @@ jobs:
       with:
         go-version: '1.20'
 
+    - name: 验证测试文件
+      run: |
+        echo "检查测试文件是否存在..."
+        if [ -f "./assets/abc.xlsx" ]; then
+          echo "✅ 测试文件存在: ./assets/abc.xlsx"
+          ls -lh ./assets/abc.xlsx
+        else
+          echo "⚠️  警告: 测试文件不存在: ./assets/abc.xlsx"
+          echo "列出 assets 目录内容:"
+          ls -la ./assets/ || echo "assets 目录不存在"
+        fi
+
+    - name: 下载依赖
+      run: go mod download
+
     - name: Test
       run: go test -v ./...
 

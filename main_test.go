@@ -603,10 +603,37 @@ func processExcelFile(inputFile string, outputPath string, dartFilePath string) 
 		col := cols[row_index]
 		
 		for i := 1; i < len(col); i++ {
-			key := generateKey(cols[0][i])
+			if i >= len(cols[0]) {
+				break
+			}
+			originalText := cols[0][i]
+			
+			// 1. 先去空格和特殊字符
+			cleanedText := cleanText(originalText)
+			
+			// 2. 再翻译（转换为拼音）
+			key := generateKey(cleanedText)
+			
+			// 如果key为空，使用清理后的文本作为key
+			if key == "" {
+				key = cleanedText
+			}
+			
+			// 如果key以数字开头，在前面添加 auto_gen_ 前缀
+			if key != "" && len(key) > 0 && key[0] >= '0' && key[0] <= '9' {
+				key = "auto_gen_" + key
+			}
+			
 			// 收集 keys 用于 dart 文件
 			if row_index == 0 {
-				dart_keys = append(dart_keys, key)
+				// 跳过空字符的key
+				if key == "" {
+					continue
+				}
+				// 去重
+				if !slices.Contains(dart_keys, key) {
+					dart_keys = append(dart_keys, key)
+				}
 			}
 			file_data[key] = col[i]
 		}

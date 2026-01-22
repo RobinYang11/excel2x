@@ -1,17 +1,30 @@
-# This workflow will build a golang project
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-go
+# Excel2JSON 跨平台构建和发布工作流
+# 根据 build.sh 的逻辑，支持多平台构建和版本管理
 
-name: Go
+name: Build and Release
 
 on:
   push:
     branches: [ "main" ]
+    tags:
+      - 'v*'  # 当推送版本 tag 时触发发布
   pull_request:
     branches: [ "main" ]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号 (例如: 1.0.0)'
+        required: false
+        type: string
+      create_release:
+        description: '是否创建 GitHub Release'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
-
-  build:
+  # 测试任务
+  test:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -21,8 +34,166 @@ jobs:
       with:
         go-version: '1.20'
 
-    - name: Build
-      run: go build -v ./...
-
     - name: Test
       run: go test -v ./...
+
+  # 多平台构建任务
+  build:
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            binary_name: excel2json
+            output_name: excel2json-linux-amd64
+          - os: macos-latest
+            goos: darwin
+            goarch: amd64
+            binary_name: excel2json
+            output_name: excel2json-macos-intel
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+            binary_name: excel2json
+            output_name: excel2json-macos-arm64
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+            binary_name: excel2json.exe
+            output_name: excel2json-windows-amd64.exe
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # 获取完整历史以计算 git commit
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.20'
+
+    - name: 获取版本号
+      id: version
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.version }}" ]; then
+          VERSION="${{ github.event.inputs.version }}"
+        elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+          VERSION="${GITHUB_REF#refs/tags/v}"
+        else
+          VERSION="dev-${GITHUB_SHA::7}"
+        fi
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "版本号: $VERSION"
+
+    - name: 构建信息
+      id: build_info
+      run: |
+        BUILD_TIME=$(date -u '+%Y-%m-%d %H:%M:%S')
+        GIT_COMMIT=$(git rev-parse --short HEAD)
+        echo "build_time=$BUILD_TIME" >> $GITHUB_OUTPUT
+        echo "git_commit=$GIT_COMMIT" >> $GITHUB_OUTPUT
+        echo "构建时间: $BUILD_TIME"
+        echo "Git提交: $GIT_COMMIT"
+
+    - name: 构建二进制文件
+      env:
+        GOOS: ${{ matrix.goos }}
+        GOARCH: ${{ matrix.goarch }}
+        VERSION: ${{ steps.version.outputs.version }}
+        BUILD_TIME: ${{ steps.build_info.outputs.build_time }}
+        GIT_COMMIT: ${{ steps.build_info.outputs.git_commit }}
+      run: |
+        OUTPUT_NAME="excel2json-v${VERSION}-${{ matrix.output_name }}"
+        LD_FLAGS="-X main.version=${VERSION} -X 'main.buildTime=${BUILD_TIME}' -X main.gitCommit=${GIT_COMMIT}"
+        go build -ldflags "$LD_FLAGS" -o "$OUTPUT_NAME" main.go
+        echo "binary_name=$OUTPUT_NAME" >> $GITHUB_OUTPUT
+        echo "✅ 构建完成: $OUTPUT_NAME"
+
+    - name: 上传构建产物
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.output_name }}-v${{ steps.version.outputs.version }}
+        path: excel2json-v${{ steps.version.outputs.version }}-${{ matrix.output_name }}
+        retention-days: 30
+
+  # 创建 Release
+  release:
+    needs: build
+    if: |
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - name: 获取版本号
+      id: version
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.version }}" ]; then
+          VERSION="${{ github.event.inputs.version }}"
+        elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+          VERSION="${GITHUB_REF#refs/tags/v}"
+        else
+          echo "❌ 无法确定版本号"
+          exit 1
+        fi
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "版本号: $VERSION"
+
+    - name: 下载所有构建产物
+      uses: actions/download-artifact@v4
+      with:
+        path: ./dist
+
+    - name: 收集所有构建文件
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        mkdir -p ./release
+        # 从所有子目录中查找并复制文件
+        find ./dist -type f -name "excel2json-v${VERSION}-*" -exec cp {} ./release/ \;
+        echo "📦 收集到的文件："
+        ls -lh ./release/
+        # 验证文件数量
+        FILE_COUNT=$(ls -1 ./release/ | wc -l)
+        if [ "$FILE_COUNT" -lt 4 ]; then
+          echo "⚠️  警告: 只找到 $FILE_COUNT 个文件，预期 4 个"
+        fi
+
+    - name: 创建 Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: v${{ steps.version.outputs.version }}
+        name: Release v${{ steps.version.outputs.version }}
+        body: |
+          ## Excel2JSON v${{ steps.version.outputs.version }}
+
+          ### 📦 构建产物
+
+          - `excel2json-v${{ steps.version.outputs.version }}-macos-intel` - macOS Intel 版本
+          - `excel2json-v${{ steps.version.outputs.version }}-macos-arm64` - macOS Apple Silicon 版本
+          - `excel2json-v${{ steps.version.outputs.version }}-windows-amd64.exe` - Windows 版本
+          - `excel2json-v${{ steps.version.outputs.version }}-linux-amd64` - Linux 版本
+
+          ### 🚀 使用示例
+
+          ```bash
+          # macOS
+          ./excel2json-v${{ steps.version.outputs.version }}-macos-arm64 -file=./assets/abc.xlsx -output_path=./output/
+
+          # Windows
+          ./excel2json-v${{ steps.version.outputs.version }}-windows-amd64.exe -file=./assets/abc.xlsx -output_path=./output/
+
+          # Linux
+          ./excel2json-v${{ steps.version.outputs.version }}-linux-amd64 -file=./assets/abc.xlsx -output_path=./output/
+          ```
+        files: |
+          ./release/*
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

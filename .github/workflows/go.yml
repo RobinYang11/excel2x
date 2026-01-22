@@ -90,6 +90,7 @@ jobs:
 
     - name: 获取版本号
       id: version
+      shell: bash
       run: |
         if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.version }}" ]; then
           VERSION="${{ github.event.inputs.version }}"
@@ -103,6 +104,7 @@ jobs:
 
     - name: 构建信息
       id: build_info
+      shell: bash
       run: |
         BUILD_TIME=$(date -u '+%Y-%m-%d %H:%M:%S')
         GIT_COMMIT=$(git rev-parse --short HEAD)
@@ -112,6 +114,7 @@ jobs:
         echo "Git提交: $GIT_COMMIT"
 
     - name: 构建二进制文件
+      shell: bash
       env:
         GOOS: ${{ matrix.goos }}
         GOARCH: ${{ matrix.goarch }}
@@ -119,11 +122,22 @@ jobs:
         BUILD_TIME: ${{ steps.build_info.outputs.build_time }}
         GIT_COMMIT: ${{ steps.build_info.outputs.git_commit }}
       run: |
+        set -e
         OUTPUT_NAME="excel2json-v${VERSION}-${{ matrix.output_name }}"
         LD_FLAGS="-X main.version=${VERSION} -X 'main.buildTime=${BUILD_TIME}' -X main.gitCommit=${GIT_COMMIT}"
+        echo "开始构建: GOOS=$GOOS GOARCH=$GOARCH"
+        echo "输出文件: $OUTPUT_NAME"
+        go version
         go build -ldflags "$LD_FLAGS" -o "$OUTPUT_NAME" main.go
-        echo "binary_name=$OUTPUT_NAME" >> $GITHUB_OUTPUT
-        echo "✅ 构建完成: $OUTPUT_NAME"
+        if [ -f "$OUTPUT_NAME" ]; then
+          ls -lh "$OUTPUT_NAME" 2>/dev/null || echo "文件已创建: $OUTPUT_NAME"
+          echo "✅ 构建完成: $OUTPUT_NAME"
+        else
+          echo "❌ 构建失败: 文件不存在"
+          echo "当前目录内容:"
+          ls -la . 2>/dev/null || dir
+          exit 1
+        fi
 
     - name: 上传构建产物
       uses: actions/upload-artifact@v4
@@ -131,6 +145,7 @@ jobs:
         name: ${{ matrix.output_name }}-v${{ steps.version.outputs.version }}
         path: excel2json-v${{ steps.version.outputs.version }}-${{ matrix.output_name }}
         retention-days: 30
+        if-no-files-found: error
 
   # 创建 Release
   release:
@@ -161,19 +176,32 @@ jobs:
       uses: actions/download-artifact@v4
       with:
         path: ./dist
+        pattern: '*-v${{ steps.version.outputs.version }}'
+        merge-multiple: false
 
     - name: 收集所有构建文件
+      shell: bash
       run: |
         VERSION="${{ steps.version.outputs.version }}"
         mkdir -p ./release
-        # 从所有子目录中查找并复制文件
-        find ./dist -type f -name "excel2json-v${VERSION}-*" -exec cp {} ./release/ \;
+        echo "查找构建文件..."
+        find ./dist -type f -name "excel2json-v${VERSION}-*" | while read file; do
+          if [ -f "$file" ]; then
+            filename=$(basename "$file")
+            cp "$file" "./release/$filename"
+            echo "复制: $file -> ./release/$filename"
+          fi
+        done
         echo "📦 收集到的文件："
-        ls -lh ./release/
+        ls -lh ./release/ || echo "release 目录为空"
         # 验证文件数量
-        FILE_COUNT=$(ls -1 ./release/ | wc -l)
+        FILE_COUNT=$(ls -1 ./release/ 2>/dev/null | wc -l)
         if [ "$FILE_COUNT" -lt 4 ]; then
           echo "⚠️  警告: 只找到 $FILE_COUNT 个文件，预期 4 个"
+          echo "dist 目录内容："
+          find ./dist -type f || echo "未找到文件"
+        else
+          echo "✅ 成功收集 $FILE_COUNT 个文件"
         fi
 
     - name: 创建 Release

@@ -148,11 +148,16 @@ jobs:
         if-no-files-found: error
 
   # 创建 Release
+  # 触发条件：
+  # 1. 推送 v* 格式的 tag（推荐）：git tag v1.0.0 && git push origin v1.0.0
+  # 2. 手动触发并选择创建 release
+  # 3. 推送到 main 分支且 commit message 包含 [release] 或 [version: x.x.x]
   release:
     needs: build
     if: |
       (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true') ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main' && (contains(github.event.head_commit.message, '[release]') || contains(github.event.head_commit.message, '[version:')))
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -162,11 +167,24 @@ jobs:
       id: version
       run: |
         if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.version }}" ]; then
+          # 手动触发时使用输入的版本号
           VERSION="${{ github.event.inputs.version }}"
         elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+          # 从 tag 中提取版本号
           VERSION="${GITHUB_REF#refs/tags/v}"
+        elif [[ "${{ github.event.head_commit.message }}" =~ \[version:[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+          # 从 commit message 中提取版本号，例如: [version: 1.0.0]
+          VERSION="${BASH_REMATCH[1]}"
+        elif [[ "${{ github.event.head_commit.message }}" == *"[release]"* ]]; then
+          # 如果只有 [release] 标记，使用 dev 版本
+          VERSION="dev-${GITHUB_SHA::7}"
+          echo "⚠️  警告: 使用 dev 版本，建议使用 [version: x.x.x] 格式"
         else
           echo "❌ 无法确定版本号"
+          echo "请使用以下方式之一："
+          echo "  1. 推送 tag: git tag v1.0.0 && git push origin v1.0.0"
+          echo "  2. Commit message 包含: [version: 1.0.0]"
+          echo "  3. 手动触发 workflow 并输入版本号"
           exit 1
         fi
         echo "version=$VERSION" >> $GITHUB_OUTPUT

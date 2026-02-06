@@ -141,11 +141,15 @@ func main() {
 				// 3. 跳过空字符的key
 				if key == "" {
 					fmt.Printf("跳过空key: %v\n", originalText)
+					fmt.Print("hello")
+
 					continue
 				}
+
 				// 去重
 				if slices.Contains(dart_keys, key) {
-					fmt.Println("key already exists:", key)
+					// fmt.Println("key already exists:", key)
+					dart_keys = append(dart_keys, key+"_dup")
 					continue
 				}
 				dart_keys = append(dart_keys, key)
